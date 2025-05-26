@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Node.js 예제</title>
+  <style>
+    video {
+      width: 45%;
+      margin: 5px;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <h2>간단한 WebRTC 영상 통화</h2>
+  <video id="localVideo" autoplay muted></video>
+  <video id="remoteVideo" autoplay></video>
+  <br>
+  <button id="startCall">통화 시작</button>
+
+  <!-- Socket.io 클라이언트 라이브러리 -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+
+    let localStream;
+    let peerConnection;
+    const peerConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }  // 무료 STUN 서버
+      ]
+    };
+
+    // 1. 로컬 미디어 스트림 가져오기
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      .then(stream => {
+        localStream = stream;
+        localVideo.srcObject = stream;
+      })
+      .catch(error => console.error('미디어 스트림 가져오기 실패:', error));
+
+    // 2. 피어 연결 생성 함수
+    function createPeerConnection() {
+      peerConnection = new RTCPeerConnection(peerConfig);
+
+      // peer 연결 상태 확인하기
+      peerConnection.onconnectionstatechange = () => {
+        console.log('연결 상태:', peerConnection.connectionState);
+      };
+
+      // 로컬 스트림의 모든 트랙을 피어 연결에 추가
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      // ICE candidate 발생 시 시그널링 서버로 전송
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', event.candidate);
+        }
+      };
+
+      // 원격 스트림이 추가되면 video 태그에 설정
+      peerConnection.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+    }
+
+    // 3. Socket.io 받은 메시지 처리
+    //상대방으로부터 offer 메세지를 받으면...
+    socket.on('offer', async offer => {
+      if (!peerConnection) {
+        createPeerConnection();
+      }
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      socket.emit('answer', answer);
+    });
+
+    //상대방으로부터 answer 메세지를 받으면...
+    socket.on('answer', async answer => {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+    
+    //상대방으로부터 ice-candidate 메세지를 받으면...
+    socket.on('ice-candidate', candidate => {
+      if (peerConnection) {
+        peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    // 4. 통화 시작 버튼 이벤트 핸들러 (offer 생성 및 전송)
+    document.getElementById('startCall').addEventListener('click', async () => {
+      createPeerConnection();
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      //소켓을 통해 offer 메세지 전달
+      socket.emit('offer', offer);
+    });
+  </script>
+
+
+</body>
+</html>
